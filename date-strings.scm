@@ -20,7 +20,7 @@
 ;; Some of these formats have dedicated output codes in srfi-19 (~c, ~x, etc),
 ;; but it looks like the chicken doesn't support them.
 (module date-strings
-	(date->rfc339-string rfc339-string->date date->rfc228-string)
+	(date->rfc339-string rfc339-string->date date->rfc228-string date->mbox-string)
 
 (import scheme
 		(chicken condition) (chicken format)
@@ -49,5 +49,12 @@
 		 [timezone-raw (date->string date "~z")]
 		 [timezone (if (string=? timezone-raw "Z") "+0000" timezone-raw)])
 	(format (date->string date "~~A, ~d ~~A ~Y ~T ~~A") weekday month timezone)))
+
+
+;; Converts a date into an mbox From-compatible string
+(define (date->mbox-string date)
+  (let* ([month (string-titlecase (date->string date "~b"))]
+		 [weekday (string-titlecase (date->string date "~a"))])
+	(format (date->string date "~~A ~~A  ~d ~T ~Y") weekday month)))
 
 ) ;; date-strings module
