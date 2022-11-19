@@ -18,7 +18,22 @@
 (load "date-strings.scm")
 (load "named-format.scm")
 
+;; Misc helper functions used in both feedsnake and feedsnake-unix
+(module feedsnake-helpers
+	(alist-car-ref)
 
+(import scheme
+		(chicken base))
+
+;; Just car's the value of alist-ref (if it exists)
+(define (alist-car-ref key alist)
+  (let ([value (alist-ref key alist)])
+	(if value
+		(car value)
+		#f))))
+
+
+;; The main feedsnake module; parses atom feeds into alists and strings
 (module feedsnake
 	(updated-feed-string read-feed entries-since entry->string)
 
@@ -26,6 +41,7 @@
 		(chicken base) (chicken condition) (chicken io) (chicken port)
 		srfi-1 srfi-19 srfi-69
 		date-strings
+		feedsnake-helpers
 		http-client
 		named-format
 		atom rss)
@@ -72,49 +88,71 @@
 (define (entry->string entry template)
   (named-format
    template
-   (entry-string-templating-parameters entry template)))
+   (append entry
+		   (entry-templating-parameters entry template))))
 
 
 ;; Returns an alist of string replacements/parameters for a given entry
 ;; For use with named-format
-(define (entry-string-templating-parameters entry template)
-  (let* ([alist-car
-		  (lambda (key alist)
-			(let ([value (alist-ref key alist)])
-			  (if value
-				  (car value))))]
-		 [updated (or (alist-car 'updated entry) (alist-car 'published entry))]
-		 [published (or (alist-car 'published entry) updated)]
-		 [urls (alist-car 'url entry)])
-	`((title ,(alist-car 'title entry))
-	  (updated ,(if updated (date->rfc228-string updated)))
-	  (published ,(if published (date->rfc228-string published)))
-	  (summary ,(alist-car 'summary entry))
-	  (url ,(cond
+(define (entry-templating-parameters entry template)
+  (append
+   entry
+   (entry-url-templating-parameters entry)
+   (entry-author-templating-parameters entry)
+   (entry-date-templating-parameters entry)))
+
+
+;; URL-related named-format templating parameters for given entry
+(define (entry-url-templating-parameters entry)
+  (let ([urls (alist-car-ref 'urls entry)])
+	`((url ,(cond
 			 [(list? urls) (car urls)]
-			 [(string? urls) urls]))
-	  (urls ,(cond
-			  [(list? urls) urls]
-			  [(string? urls) (list urls)])))))
+			 [(string? urls) urls])))))
+
+
+;; Author-related named-format templating parameters for given entry
+(define (entry-author-templating-parameters entry)
+  (let* ([authors (alist-car-ref 'authors entry)]
+		 [author (if authors (car authors) (alist-car-ref 'feed-title entry))])
+	`((author ,author))))
+
+
+;; Date-related named-format templating parameters for given entry
+(define (entry-date-templating-parameters entry)
+  (let* ([updated (or (alist-car-ref 'updated entry) (alist-car-ref 'published entry))]
+		 [published (or (alist-car-ref 'published entry) updated)])
+	`((updated-rfc228 ,(if updated (date->rfc228-string updated)))
+	  (published-rfc228 ,(if published (date->rfc228-string published)))
+	  (updated-mbox ,(if updated (date->mbox-string updated)))
+	  (published-mbox ,(if published (date->mbox-string published))))))
 
 
 ;; Parse an atom feed into a feedsnake-friendly alist
 (define (atom-doc->feedsnake-feed atom)
   `((title ,(last (feed-title atom)))
+	(urls ,(feed-links atom))
+	(authors ,(map author-name (feed-authors atom)))
 	(updated ,(feed-updated atom))
 	(entry-updated ,(atom-feed-latest-entry-date atom))
-	(entries ,(map atom-entry->feedsnake-entry (feed-entries atom)))))
+	(entries ,(map
+			   (lambda (entry)
+				 (atom-entry->feedsnake-entry entry atom))
+			   (feed-entries atom)))))
 
 
 ;; Parse an atom entry into a feedsnake entry :>
-(define (atom-entry->feedsnake-entry entry)
+(define (atom-entry->feedsnake-entry entry atom)
   (let ([published (rfc339-string->date (entry-published entry))]
-		[updated (rfc339-string->date (entry-updated entry))])
+		[updated (rfc339-string->date (entry-updated entry))]
+		[feed-authors (map author-name (feed-authors atom))]
+		[entry-authors (map author-name (entry-authors entry))])
 	`((title ,(last (entry-title entry)))
 	  (updated ,(or updated published))
 	  (published ,(or published updated))
 	  (summary ,(last (entry-summary entry)))
-	  (url ,(map link-uri (entry-links entry))))))
+	  (urls ,(map link-uri (entry-links entry)))
+	  (authors ,(if (null? entry-authors) feed-authors entry-authors))
+	  (feed-title ,(feed-title atom)))))
 
 
 ;; Get an atom feed's latest date for an entry's updating/publishing
@@ -142,15 +180,92 @@
 
 ;; The UNIX-style frontend for feedsnake
 (module feedsnake-unix
-	(update-feed-file latest-entries feed-files)
+	(update-feed-file latest-entries all-entries write-entry write-entries feed-files *mbox-template*)
 
 (import scheme
 		(chicken base) (chicken condition) (chicken file) (chicken io)
 		(chicken process-context) (chicken process-context posix)
 		srfi-1 srfi-19
 		date-strings
-		feedsnake
+		feedsnake feedsnake-helpers
 		xattr)
+
+
+(define *maildir-template*
+  `((entry-template
+	 ,(string-append
+	   "From: ~{{~A ||||from-name}}"
+	   "<~{{~A||feedsnake||FROM_USER||author-user||feed-title}}"
+	   "@"
+	   "~{{~A||localhost||FROM_HOST||author-domain||feed-domain}}>"
+	   "\n"
+ 	   "To:~{{ ~A ||You||TO_NAME||USER}}"
+	   "<~{{~A||you||TO_USER||USER}}"
+	   "@"
+	   "~{{~A||localhost||TO_HOST||HOSTNAME}}>"
+	   "\n"
+	   "Subject: ~{{~A||Unnamed post||title}}\n"
+	   "Date: ~{{~A||||updated||published}}\n"
+	   "\n"
+	   "~{{~{~a~^, ~}~%***~%||||urls}}\n"
+	   "~{{~A||||summary}}\n"))
+	(multifile-output? #t)))
+
+
+(define *mbox-template*
+  `((entry-template ,(string-append
+					  "From FEEDSNAKE ~{{~A||||updated-mbox||published-mbox}}\n"
+					  (car (alist-ref 'entry-template *maildir-template*))
+					  "\n"))
+	(multifile-output? #f)))
+
+
+(define *html-template*
+  `((entry-template
+	 "<li><b>~{{~A||Unnamed post||title}}</b> <i>~{{~A||||updated}}<i> <p>~{{~A||No summary||summary}}</p></li>")
+	(multifile-output? #f)
+	(output-header "<!DOCTYPE html>\n<html>\n<head>\n<title>~{{~A||Unnamed feed||title}}</title>\n</head>\n<body>")
+	(output-footer "</body></html>")
+	(multifile-output? #f)))
+
+
+(define *default-template*
+  (append *maildir-template*
+		  '((output-dir "./"))))
+
+(define *default-values*
+  '((output-dir "./")))
+
+(define *default-multifile-values*
+  '((filename-template "~{{~A||||updated||published}}.~{{~A||you||USER}}@~{{~A||localhost|HOSTNAME}}.~{{~A||||title||title}}")))
+
+(define *default-singlefile-values*
+  '())
+
+
+;; Writes a given feed entry to the out-path, as per the feedsnake-unix-format template alist
+(define (write-entry entry template-alist out-path)
+  (let ([file-mode (if (alist-car-ref 'multifile-output? template-alist) #:text #:append)]
+		[header (or (alist-car-ref 'output-header template-alist) "")]
+		[footer (or (alist-car-ref 'output-footer template-alist) "")]
+		[entry-w-env-vars (append (get-environment-variables) entry)])
+	(call-with-output-file
+		out-path
+	  (lambda (out-port)
+		(write-string
+		 (string-append header
+						(entry->string entry-w-env-vars (alist-car-ref 'entry-template template-alist))
+						footer)
+		 #f
+		 out-port))
+	  file-mode)))
+
+
+;; Writes all entries in a list to an out-path (mere convenience function)
+(define (write-entries entries template-alist out-path)
+  (map (lambda (entry)
+		 (write-entry entry template-alist out-path))
+	   entries))
 
 
 ;; Switch the cached version of the feed with a newer version, if available
@@ -218,13 +333,3 @@
 
 ) ;; feedsnake-unix module
 
-
-
-(define *retpoŝto*
-  "Subject: ~{{~A||Unnamed post||title}}
-From:~{{ ~A ||||from-name}}<~{{~A||feedsnake@localhost||from-address}}>
-To:~{{ ~A ||You||to-name}}<~{{~A||you@localhost||to-address}}>
-Date: ~{{~A||||updated}}
-
-~{{~{~a~^, ~}~%~%***~%||||urls}}
-~{{~A||||summary}}")
