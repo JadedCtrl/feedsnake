@@ -38,8 +38,8 @@
 	(updated-feed-string read-feed entries-since entry->string)
 
 (import scheme
-		(chicken base) (chicken condition) (chicken io) (chicken port)
-		srfi-1 srfi-19 srfi-69
+		(chicken base) (chicken condition) (chicken io) (chicken pathname) (chicken port)
+		srfi-1 srfi-13 srfi-19 srfi-69
 		date-strings
 		feedsnake-helpers
 		http-client
@@ -130,7 +130,7 @@
 ;; Parse an atom feed into a feedsnake-friendly alist
 (define (atom-doc->feedsnake-feed atom)
   `((title ,(last (feed-title atom)))
-	(urls ,(feed-links atom))
+	(url ,(atom-feed-preferred-url atom))
 	(authors ,(map author-name (feed-authors atom)))
 	(updated ,(feed-updated atom))
 	(entry-updated ,(atom-feed-latest-entry-date atom))
@@ -138,6 +138,7 @@
 			   (lambda (entry)
 				 (atom-entry->feedsnake-entry entry atom))
 			   (feed-entries atom)))))
+
 
 
 ;; Parse an atom entry into a feedsnake entry :>
@@ -150,9 +151,19 @@
 	  (updated ,(or updated published))
 	  (published ,(or published updated))
 	  (summary ,(last (entry-summary entry)))
-	  (urls ,(map link-uri (entry-links entry)))
+	  (urls ,(map (lambda (link) (atom-link->string link atom))
+				  (entry-links entry)))
 	  (authors ,(if (null? entry-authors) feed-authors entry-authors))
 	  (feed-title ,(feed-title atom)))))
+
+
+;; The preferred/given URL for an atom feed
+(define (atom-feed-preferred-url atom)
+  (car
+   (filter
+	  (lambda (link)
+		(string=? (link-relation link) "self"))
+	  (feed-links atom))))
 
 
 ;; Get an atom feed's latest date for an entry's updating/publishing
@@ -166,6 +177,15 @@
 	   (if (date>=? a b) a b))
 	 #f
 	 (map entry-date (feed-entries atom)))))
+
+
+;; Convert an atom-link into a proper, valid url
+(define (atom-link->string link atom)
+  (if (string-contains (link-uri link) "://")
+	  (link-uri link)
+	  (string-append (pathname-directory (atom-feed-preferred-url atom))
+					 "/"
+					 (link-uri link))))
 
 
 ;; Download a file over HTTP to the given port.
