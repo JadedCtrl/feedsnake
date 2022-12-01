@@ -86,6 +86,7 @@
 
 
 (define (entry->string entry template)
+  (print (entry-templating-parameters entry template))
   (named-format
    template
    (append entry
@@ -154,7 +155,7 @@
 	  (urls ,(map (lambda (link) (atom-link->string link atom))
 				  (entry-links entry)))
 	  (authors ,(if (null? entry-authors) feed-authors entry-authors))
-	  (feed-title ,(feed-title atom)))))
+	  (feed-title ,(last (feed-title atom))))))
 
 
 ;; The preferred/given URL for an atom feed
@@ -200,7 +201,7 @@
 
 ;; The UNIX-style frontend for feedsnake
 (module feedsnake-unix
-	(update-feed-file latest-entries all-entries write-entry write-entries feed-files *mbox-template*)
+	(update-feed-file latest-entries all-entries write-entry write-entries entry-output-path feed-files *mbox-template* *maildir-template*)
 
 (import scheme
 		(chicken base) (chicken condition) (chicken file) (chicken io)
@@ -208,6 +209,7 @@
 		srfi-1 srfi-19
 		date-strings
 		feedsnake feedsnake-helpers
+		named-format
 		xattr)
 
 
@@ -225,7 +227,7 @@
 	   "~{{~A||localhost||TO_HOST||HOSTNAME}}>"
 	   "\n"
 	   "Subject: ~{{~A||Unnamed post||title}}\n"
-	   "Date: ~{{~A||||updated||published}}\n"
+	   "Date: ~{{~A||||updated-rfc228||published-rfc228}}\n"
 	   "\n"
 	   "~{{~{~a~^, ~}~%***~%||||urls}}\n"
 	   "~{{~A||||summary}}\n"))
@@ -239,16 +241,6 @@
 					  "\n"))
 	(multifile-output? #f)))
 
-
-(define *html-template*
-  `((entry-template
-	 "<li><b>~{{~A||Unnamed post||title}}</b> <i>~{{~A||||updated}}<i> <p>~{{~A||No summary||summary}}</p></li>")
-	(multifile-output? #f)
-	(output-header "<!DOCTYPE html>\n<html>\n<head>\n<title>~{{~A||Unnamed feed||title}}</title>\n</head>\n<body>")
-	(output-footer "</body></html>")
-	(multifile-output? #f)))
-
-
 (define *default-template*
   (append *maildir-template*
 		  '((output-dir "./"))))
@@ -257,26 +249,27 @@
   '((output-dir "./")))
 
 (define *default-multifile-values*
-  '((filename-template "~{{~A||||updated||published}}.~{{~A||you||USER}}@~{{~A||localhost|HOSTNAME}}.~{{~A||||title||title}}")))
+  '((filename-template "~{{~A||||updated||published}}.~{{~A||you||USER}}@~{{~A||localhost|HOSTNAME}}")
+	(multifile-output? #t)))
 
 (define *default-singlefile-values*
-  '())
+  '((filename-template "feed.out")
+	(multifile-output? #f)))
 
 
 ;; Writes a given feed entry to the out-path, as per the feedsnake-unix-format template alist
 (define (write-entry entry template-alist out-path)
-  (let ([file-mode (if (alist-car-ref 'multifile-output? template-alist) #:text #:append)]
-		[header (or (alist-car-ref 'output-header template-alist) "")]
-		[footer (or (alist-car-ref 'output-footer template-alist) "")]
+  (let ([template (if (alist-car-ref 'multifile-output? template-alist)
+					  (append template-alist *default-multifile-values* *default-values*)
+					  (append template-alist *default-singlefile-values* *default-values*))]
+		[file-mode (if (alist-car-ref 'multifile-output? template-alist) #:text #:append)]
 		[entry-w-env-vars (append (get-environment-variables) entry)])
 	(call-with-output-file
-		out-path
+		(entry-output-path entry template out-path)
 	  (lambda (out-port)
 		(write-string
-		 (string-append header
-						(entry->string entry-w-env-vars (alist-car-ref 'entry-template template-alist))
-						footer)
-		 #f
+		 (entry->string entry-w-env-vars (alist-car-ref 'entry-template template))
+		 		 #f
 		 out-port))
 	  file-mode)))
 
@@ -286,6 +279,33 @@
   (map (lambda (entry)
 		 (write-entry entry template-alist out-path))
 	   entries))
+
+
+;; Decides the correct output path for an entry, given the template's filename rules etc.
+(define (entry-output-path entry template-alist base-out-path)
+  (let ([multifile? (alist-car-ref 'multifile-output? template-alist)])
+	(if multifile?
+		(multifile-entry-path entry template-alist base-out-path)
+		(singlefile-entry-path entry template-alist base-out-path))))
+
+
+(define (singlefile-entry-path entry template-alist base-out-path)
+  (if (directory-exists? base-out-path)
+		(signal
+		 (make-property-condition
+		  'exn 'location 'file
+		  'message (string-append base-out-path " shouldn't be a directory.")))
+		base-out-path))
+
+
+(define (multifile-entry-path entry template-alist base-out-path)
+  (let* ([file-leaf (named-format (alist-car-ref 'filename-template template-alist) entry)])
+	(if (create-directory base-out-path)
+		(string-append base-out-path "/" file-leaf)
+		(signal
+		 (make-property-condition
+		  'exn 'location 'file
+		  'message (string-append base-out-path " either isn't accessible or isn't a directory."))))))
 
 
 ;; Switch the cached version of the feed with a newer version, if available
