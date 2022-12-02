@@ -86,7 +86,6 @@
 
 
 (define (entry->string entry template)
-  (print (entry-templating-parameters entry template))
   (named-format
    template
    (append entry
@@ -201,14 +200,15 @@
 
 ;; The UNIX-style frontend for feedsnake
 (module feedsnake-unix
-	(update-feed-file latest-entries all-entries write-entry write-entries entry-output-path feed-files *mbox-template* *maildir-template*)
+	(main update-feed-file latest-entries all-entries write-entry write-entries entry-output-path feed-files *mbox-template* *maildir-template*)
 
 (import scheme
-		(chicken base) (chicken condition) (chicken file) (chicken io)
-		(chicken process-context) (chicken process-context posix)
+		(chicken base) (chicken condition) (chicken file) (chicken file posix)
+		(chicken io) (chicken process-context) (chicken process-context posix)
 		srfi-1 srfi-19
 		date-strings
 		feedsnake feedsnake-helpers
+		getopt-long
 		named-format
 		xattr)
 
@@ -257,20 +257,69 @@
 	(multifile-output? #f)))
 
 
-;; Writes a given feed entry to the out-path, as per the feedsnake-unix-format template alist
-(define (write-entry entry template-alist out-path)
-  (let ([template (if (alist-car-ref 'multifile-output? template-alist)
-					  (append template-alist *default-multifile-values* *default-values*)
-					  (append template-alist *default-singlefile-values* *default-values*))]
-		[file-mode (if (alist-car-ref 'multifile-output? template-alist) #:text #:append)]
-		[entry-w-env-vars (append (get-environment-variables) entry)])
+(define *help-msg*
+  (string-append
+   "usage: feedsnake [-h] FILE...\n"
+   "Feedsnake is a program for converting Atom feeds into mbox/maildir files.\n"
+   "Any Atom feeds passed as an argument will be output in mbox format.\n\n"))
+
+(define *opts*
+  '((help
+	 "Print a usage message"
+	 (single-char #\h))))
+;;	(outdir
+;;	 "Output directory, used for multi-file templates (e.g., maildir)"
+;;	 (single-char #\d)
+;;	 (value (required DIR)))
+;;	(output
+;;	 "Output file, used for single-file templates (e.g., mbox). Defaults to stdout."
+;;	 (single-char #\o)
+;;	 (value (required FILE)))
+;;	(template
+;;	 "Output template for feed ('mbox' or 'maildir'). Defaults to 'mbox'."
+;;	 (single-char #\t)
+;;	 (value (required TEMPLATE)))))
+
+
+;; The `main` procedure that should be called to run feedsnake-unix for use as script.
+;; TODO: accept piped-in feeds
+(define (main)
+  (let ([args (getopt-long (command-line-arguments) *opts*)])
+	(if (alist-ref 'help args)
+		(help)
+		(map (lambda (free-arg)
+			   (if (file-exists? free-arg)
+				   (map (lambda (entry)
+						  (write-entry entry *mbox-template* (open-output-file* fileno/stdout)))
+						(all-entries free-arg))))
+			 (alist-ref '@ args)))))
+
+
+;; Prints cli usage to stderr.
+(define (help)
+  (write-string *help-msg* #f (open-output-file* fileno/stderr))
+  (write-string (usage *opts*) #f (open-output-file* fileno/stderr)))
+
+
+;; Writes a given feed entry to the out-port, as per the feedsnake-unix-format template alist
+(define (write-entry entry template-alist out-port)
+  (write-string
+   (entry->string (append (get-environment-variables) entry)
+				  (alist-car-ref 'entry-template template-alist))
+   #f
+   out-port))
+
+
+;; Write an entry to the given file (directory for multifile; normal file otherwise)
+(define (write-entry-to-file entry template-alist out-path)
+  (let* ([template (if (alist-car-ref 'multifile-output? template-alist)
+					   (append template-alist *default-multifile-values* *default-values*)
+					   (append template-alist *default-singlefile-values* *default-values*))]
+		 [file-mode (if (alist-car-ref 'multifile-output? template) #:text #:append)])
 	(call-with-output-file
 		(entry-output-path entry template out-path)
 	  (lambda (out-port)
-		(write-string
-		 (entry->string entry-w-env-vars (alist-car-ref 'entry-template template))
-		 		 #f
-		 out-port))
+		(write-entry entry template out-port))
 	  file-mode)))
 
 
@@ -289,6 +338,7 @@
 		(singlefile-entry-path entry template-alist base-out-path))))
 
 
+;; Output path for entry with a single-file template
 (define (singlefile-entry-path entry template-alist base-out-path)
   (if (directory-exists? base-out-path)
 		(signal
@@ -298,6 +348,7 @@
 		base-out-path))
 
 
+;; Output path for an entry w multifile template
 (define (multifile-entry-path entry template-alist base-out-path)
   (let* ([file-leaf (named-format (alist-car-ref 'filename-template template-alist) entry)])
 	(if (create-directory base-out-path)
