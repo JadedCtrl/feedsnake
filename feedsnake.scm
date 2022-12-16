@@ -18,33 +18,64 @@
 (load "date-strings.scm")
 (load "named-format.scm")
 
-;; Misc helper functions used in both feedsnake and feedsnake-unix
-(module feedsnake-helpers
-	(alist-car-ref)
-
-(import scheme
-		(chicken base))
-
-;; Just car's the value of alist-ref (if it exists)
-(define (alist-car-ref key alist)
-  (let ([value (alist-ref key alist)])
-	(if value
-		(car value)
-		#f))))
-
 
 ;; The main feedsnake module; parses atom feeds into alists and strings
 (module feedsnake
-	(updated-feed-string read-feed entries-since entry->string)
+	(updated-feed-string read-feed entries-since write-entry write-entry-to-file write-entries-to-file all-entries entry->string
+	 *maildir-template* *mbox-template*)
 
 (import scheme
-		(chicken base) (chicken condition) (chicken io) (chicken pathname) (chicken port)
+		(chicken base) (chicken condition) (chicken io) (chicken file) (chicken process-context)  (chicken pathname) (chicken port)
 		srfi-1 srfi-13 srfi-19 srfi-69
 		date-strings
-		feedsnake-helpers
 		http-client
 		named-format
+		xattr
 		atom rss)
+
+
+(define *maildir-template*
+  `((entry-template
+	 ,(string-append
+	   "From: ~{{~A ||||from-name}}"
+	   "<~{{~A||feedsnake||FROM_USER||author-user||feed-title}}"
+	   "@"
+	   "~{{~A||localhost||FROM_HOST||author-domain||feed-domain}}>"
+	   "\n"
+ 	   "To:~{{ ~A ||You||TO_NAME||USER}}"
+	   "<~{{~A||you||TO_USER||USER}}"
+	   "@"
+	   "~{{~A||localhost||TO_HOST||HOSTNAME}}>"
+	   "\n"
+	   "Subject: ~{{~A||Unnamed post||title}}\n"
+	   "Date: ~{{~A||||updated-rfc228||published-rfc228}}\n"
+	   "\n"
+	   "~{{~{~a~^, ~}~%***~%||||urls}}\n"
+	   "~{{~A||||summary}}\n"))
+	(multifile-output? #t)))
+
+
+(define *mbox-template*
+  `((entry-template ,(string-append
+					  "From FEEDSNAKE ~{{~A||||updated-mbox||published-mbox}}\n"
+					  (car (alist-ref 'entry-template *maildir-template*))
+					  "\n"))
+	(multifile-output? #f)))
+
+(define *default-template*
+  (append *maildir-template*
+		  '((output-dir "./"))))
+
+(define *default-values*
+  '((output-dir "./")))
+
+(define *default-multifile-values*
+  '((filename-template "~{{~A||||updated||published}}.~{{~A||you||USER}}@~{{~A||localhost|HOSTNAME}}")
+	(multifile-output? #t)))
+
+(define *default-singlefile-values*
+  '((filename-template "feed.out")
+	(multifile-output? #f)))
 
 
 ;; Read the given port into a feedsnake-feed (alist), no matter the format! c:<
@@ -127,180 +158,6 @@
 	  (published-mbox ,(if published (date->mbox-string published))))))
 
 
-;; Parse an atom feed into a feedsnake-friendly alist
-(define (atom-doc->feedsnake-feed atom)
-  `((title ,(last (feed-title atom)))
-	(url ,(atom-feed-preferred-url atom))
-	(authors ,(map author-name (feed-authors atom)))
-	(updated ,(feed-updated atom))
-	(entry-updated ,(atom-feed-latest-entry-date atom))
-	(entries ,(map
-			   (lambda (entry)
-				 (atom-entry->feedsnake-entry entry atom))
-			   (feed-entries atom)))))
-
-
-
-;; Parse an atom entry into a feedsnake entry :>
-(define (atom-entry->feedsnake-entry entry atom)
-  (let ([published (rfc339-string->date (entry-published entry))]
-		[updated (rfc339-string->date (entry-updated entry))]
-		[feed-authors (map author-name (feed-authors atom))]
-		[entry-authors (map author-name (entry-authors entry))])
-	`((title ,(last (entry-title entry)))
-	  (updated ,(or updated published))
-	  (published ,(or published updated))
-	  (summary ,(last (entry-summary entry)))
-	  (urls ,(map (lambda (link) (atom-link->string link atom))
-				  (entry-links entry)))
-	  (authors ,(if (null? entry-authors) feed-authors entry-authors))
-	  (feed-title ,(last (feed-title atom))))))
-
-
-;; The preferred/given URL for an atom feed
-(define (atom-feed-preferred-url atom)
-  (car
-   (filter
-	  (lambda (link)
-		(string=? (link-relation link) "self"))
-	  (feed-links atom))))
-
-
-;; Get an atom feed's latest date for an entry's updating/publishing
-(define (atom-feed-latest-entry-date atom)
-  (let ([entry-date
-		 (lambda (entry)
-		   (or (rfc339-string->date (entry-updated entry))
-			   (rfc339-string->date (entry-published entry))))])
-	(reduce
-	 (lambda (a b)
-	   (if (date>=? a b) a b))
-	 #f
-	 (map entry-date (feed-entries atom)))))
-
-
-;; Convert an atom-link into a proper, valid url
-(define (atom-link->string link atom)
-  (if (string-contains (link-uri link) "://")
-	  (link-uri link)
-	  (string-append (pathname-directory (atom-feed-preferred-url atom))
-					 "/"
-					 (link-uri link))))
-
-
-;; Download a file over HTTP to the given port.
-(define (fetch-http url out-port)
-  (call-with-input-request
-   url #f
-   (lambda (in-port) (copy-port in-port out-port))))
-
-) ;; feedsnake module
-
-
-
-;; The UNIX-style frontend for feedsnake
-(module feedsnake-unix
-	(main update-feed-file latest-entries all-entries write-entry write-entries entry-output-path feed-files *mbox-template* *maildir-template*)
-
-(import scheme
-		(chicken base) (chicken condition) (chicken file) (chicken file posix)
-		(chicken io) (chicken process-context) (chicken process-context posix)
-		srfi-1 srfi-19
-		date-strings
-		feedsnake feedsnake-helpers
-		getopt-long
-		named-format
-		xattr)
-
-
-(define *maildir-template*
-  `((entry-template
-	 ,(string-append
-	   "From: ~{{~A ||||from-name}}"
-	   "<~{{~A||feedsnake||FROM_USER||author-user||feed-title}}"
-	   "@"
-	   "~{{~A||localhost||FROM_HOST||author-domain||feed-domain}}>"
-	   "\n"
- 	   "To:~{{ ~A ||You||TO_NAME||USER}}"
-	   "<~{{~A||you||TO_USER||USER}}"
-	   "@"
-	   "~{{~A||localhost||TO_HOST||HOSTNAME}}>"
-	   "\n"
-	   "Subject: ~{{~A||Unnamed post||title}}\n"
-	   "Date: ~{{~A||||updated-rfc228||published-rfc228}}\n"
-	   "\n"
-	   "~{{~{~a~^, ~}~%***~%||||urls}}\n"
-	   "~{{~A||||summary}}\n"))
-	(multifile-output? #t)))
-
-
-(define *mbox-template*
-  `((entry-template ,(string-append
-					  "From FEEDSNAKE ~{{~A||||updated-mbox||published-mbox}}\n"
-					  (car (alist-ref 'entry-template *maildir-template*))
-					  "\n"))
-	(multifile-output? #f)))
-
-(define *default-template*
-  (append *maildir-template*
-		  '((output-dir "./"))))
-
-(define *default-values*
-  '((output-dir "./")))
-
-(define *default-multifile-values*
-  '((filename-template "~{{~A||||updated||published}}.~{{~A||you||USER}}@~{{~A||localhost|HOSTNAME}}")
-	(multifile-output? #t)))
-
-(define *default-singlefile-values*
-  '((filename-template "feed.out")
-	(multifile-output? #f)))
-
-
-(define *help-msg*
-  (string-append
-   "usage: feedsnake [-h] FILE...\n"
-   "Feedsnake is a program for converting Atom feeds into mbox/maildir files.\n"
-   "Any Atom feeds passed as an argument will be output in mbox format.\n\n"))
-
-(define *opts*
-  '((help
-	 "Print a usage message"
-	 (single-char #\h))))
-;;	(outdir
-;;	 "Output directory, used for multi-file templates (e.g., maildir)"
-;;	 (single-char #\d)
-;;	 (value (required DIR)))
-;;	(output
-;;	 "Output file, used for single-file templates (e.g., mbox). Defaults to stdout."
-;;	 (single-char #\o)
-;;	 (value (required FILE)))
-;;	(template
-;;	 "Output template for feed ('mbox' or 'maildir'). Defaults to 'mbox'."
-;;	 (single-char #\t)
-;;	 (value (required TEMPLATE)))))
-
-
-;; The `main` procedure that should be called to run feedsnake-unix for use as script.
-;; TODO: accept piped-in feeds
-(define (main)
-  (let ([args (getopt-long (command-line-arguments) *opts*)])
-	(if (alist-ref 'help args)
-		(help)
-		(map (lambda (free-arg)
-			   (if (file-exists? free-arg)
-				   (map (lambda (entry)
-						  (write-entry entry *mbox-template* (open-output-file* fileno/stdout)))
-						(all-entries free-arg))))
-			 (alist-ref '@ args)))))
-
-
-;; Prints cli usage to stderr.
-(define (help)
-  (write-string *help-msg* #f (open-output-file* fileno/stderr))
-  (write-string (usage *opts*) #f (open-output-file* fileno/stderr)))
-
-
 ;; Writes a given feed entry to the out-port, as per the feedsnake-unix-format template alist
 (define (write-entry entry template-alist out-port)
   (write-string
@@ -324,9 +181,9 @@
 
 
 ;; Writes all entries in a list to an out-path (mere convenience function)
-(define (write-entries entries template-alist out-path)
+(define (write-entries-to-file entries template-alist out-path)
   (map (lambda (entry)
-		 (write-entry entry template-alist out-path))
+		 (write-entry-to-file entry template-alist out-path))
 	   entries))
 
 
@@ -384,13 +241,171 @@
 	(entries-since feed last-update)))
 
 
-;; List of all entries of the feed
+;; List of all entries of the feed file
 (define (all-entries feed-path)
   (let ([feed (call-with-input-file feed-path read-feed)])
 	(car (alist-ref 'entries feed))))
 
 
+;; Atom parsing
+;; ————————————————————————————————————————
+
+;; Parse an atom feed into a feedsnake-friendly alist
+(define (atom-doc->feedsnake-feed atom)
+  `((title ,(last (feed-title atom)))
+	(url ,(atom-feed-preferred-url atom))
+	(authors ,(map author-name (feed-authors atom)))
+	(updated ,(feed-updated atom))
+	(entry-updated ,(atom-feed-latest-entry-date atom))
+	(entries ,(map
+			   (lambda (entry)
+				 (atom-entry->feedsnake-entry entry atom))
+			   (feed-entries atom)))))
+
+
+;; Parse an atom entry into a feedsnake entry :>
+(define (atom-entry->feedsnake-entry entry atom)
+  (let ([published (rfc339-string->date (entry-published entry))]
+		[updated (rfc339-string->date (entry-updated entry))]
+		[feed-authors (map author-name (feed-authors atom))]
+		[entry-authors (map author-name (entry-authors entry))])
+	`((title ,(last (entry-title entry)))
+	  (updated ,(or updated published))
+	  (published ,(or published updated))
+	  (summary ,(last (entry-summary entry)))
+	  (urls ,(map (lambda (link) (atom-link->string link atom))
+				  (entry-links entry)))
+	  (authors ,(if (null? entry-authors) feed-authors entry-authors))
+	  (feed-title ,(last (feed-title atom))))))
+
+
+;; The preferred/given URL for an atom feed
+(define (atom-feed-preferred-url atom)
+  (car
+   (filter
+	  (lambda (link)
+		(string=? (link-relation link) "self"))
+	  (feed-links atom))))
+
+
+;; Get an atom feed's latest date for an entry's updating/publishing
+(define (atom-feed-latest-entry-date atom)
+  (let ([entry-date
+		 (lambda (entry)
+		   (or (rfc339-string->date (entry-updated entry))
+			   (rfc339-string->date (entry-published entry))))])
+	(reduce
+	 (lambda (a b)
+	   (if (date>=? a b) a b))
+	 #f
+	 (map entry-date (feed-entries atom)))))
+
+
+;; Convert an atom-link into a proper, valid url
+(define (atom-link->string link atom)
+  (if (string-contains (link-uri link) "://")
+	  (link-uri link)
+	  (string-append (pathname-directory (atom-feed-preferred-url atom))
+					 "/"
+					 (link-uri link))))
+
+
+;; Misc. functions
+;; ————————————————————————————————————————
+
+;; Just car's the value of alist-ref (if it exists)
+(define (alist-car-ref key alist)
+  (let ([value (alist-ref key alist)])
+	(if value
+		(car value)
+		#f)))
+
+
+;; Download a file over HTTP to the given port.
+(define (fetch-http url out-port)
+  (call-with-input-request
+   url #f
+   (lambda (in-port) (copy-port in-port out-port))))
+
+
+;; Convert a date of arbitrary timezone to UTC
+(define (date->utc-date date)
+  (time-utc->date (date->time-utc date)))
+
+
+;; The current date, with UTC (-0; Z) timezone
+(define (current-date-utc)
+  (date->utc-date (current-date)))
+
+) ;; feedsnake module
+
+
+
+;; The UNIX-style frontend for feedsnake
+(module feedsnake-unix
+	(main main)
+
+(import scheme
+		(chicken base) (chicken file) (chicken file posix) (chicken io)
+		(chicken process-context) (chicken process-context posix)
+		srfi-1
+		feedsnake
+		getopt-long)
+
+
+(define *help-msg*
+  (string-append
+   "usage: feedsnake [-h] FILE...\n"
+   "Feedsnake is a program for converting Atom feeds into mbox/maildir files.\n"
+   "Any Atom feeds passed as an argument will be output in mbox format.\n\n"))
+
+
+(define *opts*
+  '((help
+	 "Print a usage message"
+	 (single-char #\h))
+;;	(outdir
+;;	 "Output directory, used for multi-file templates (e.g., maildir)"
+;;	 (single-char #\d)
+;;	 (value (required DIR)))
+	(output
+	 "Output file, used for single-file templates (e.g., mbox). Defaults to stdout."
+	 (single-char #\o)
+	 (value (required FILE)))))
+;;	(template
+;;	 "Output template for feed ('mbox' or 'maildir'). Defaults to 'mbox'."
+;;	 (single-char #\t)
+;;	 (value (required TEMPLATE)))))
 ;; The user's presumed config root.
+
+
+;; Prints cli usage to stderr.
+(define (help)
+  (write-string *help-msg* #f (open-output-file* fileno/stderr))
+  (write-string (usage *opts*) #f (open-output-file* fileno/stderr)))
+
+
+;; The `main` procedure that should be called to run feedsnake-unix for use as script.
+;; TODO: accept piped-in feeds
+(define (main)
+  (let* ([args (getopt-long (command-line-arguments) *opts*)]
+		 [output (alist-ref 'output args)])
+	(if (alist-ref 'help args)
+		(help)
+		(map (lambda (free-arg)
+			   (cond [(not (file-exists? free-arg))
+					  #f]
+					 [output
+					  (write-entries-to-file (all-entries free-arg) *mbox-template* output)]
+					 [(not output)
+					  (map (lambda (entry)
+							 (write-entry entry *mbox-template*
+										  (open-output-file* fileno/stdout)))
+                           (all-entries free-arg))]))
+			 (alist-ref '@ args)))))
+
+
+;; Supposed config root of the user (as per XDG, or simple ~/.config)
 (define (config-directory)
   (or (get-environment-variable "XDG_CONFIG_HOME")
 	  (string-append (sixth (user-information (current-user-id))) "/.config")))
@@ -413,14 +428,4 @@
 	   (directory (feeds-directory))))
 
 
-;; Convert a date of arbitrary timezone to UTC
-(define (date->utc-date date)
-  (time-utc->date (date->time-utc date)))
-
-
-;; The current date, with UTC (-0; Z) timezone
-(define (current-date-utc)
-  (date->utc-date (current-date)))
-
 ) ;; feedsnake-unix module
-
