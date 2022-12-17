@@ -364,19 +364,14 @@
   '((help
 	 "Print a usage message"
 	 (single-char #\h))
-;;	(outdir
-;;	 "Output directory, used for multi-file templates (e.g., maildir)"
-;;	 (single-char #\d)
-;;	 (value (required DIR)))
+	(outdir
+	 "Output directory, used for maildir output"
+	 (single-char #\d)
+	 (value (required DIR)))
 	(output
-	 "Output file, used for single-file templates (e.g., mbox). Defaults to stdout."
+	 "Output file, used for mbox output. Default is stdout."
 	 (single-char #\o)
 	 (value (required FILE)))))
-;;	(template
-;;	 "Output template for feed ('mbox' or 'maildir'). Defaults to 'mbox'."
-;;	 (single-char #\t)
-;;	 (value (required TEMPLATE)))))
-;; The user's presumed config root.
 
 
 ;; Prints cli usage to stderr.
@@ -389,17 +384,19 @@
 ;; TODO: accept piped-in feeds
 (define (main)
   (let* ([args (getopt-long (command-line-arguments) *opts*)]
-		 [output (alist-ref 'output args)])
+		 [output-dir (alist-ref 'outdir args)]
+		 [output (or (alist-ref 'output args) output-dir)]
+		 [template (if output-dir *maildir-template* *mbox-template*)])
 	(if (alist-ref 'help args)
 		(help)
 		(map (lambda (free-arg)
 			   (cond [(not (file-exists? free-arg))
 					  #f]
 					 [output
-					  (write-entries-to-file (all-entries free-arg) *mbox-template* output)]
+					  (write-entries-to-file (all-entries free-arg) template output)]
 					 [(not output)
 					  (map (lambda (entry)
-							 (write-entry entry *mbox-template*
+							 (write-entry entry template
 										  (open-output-file* fileno/stdout)))
                            (all-entries free-arg))]))
 			 (alist-ref '@ args)))))
