@@ -241,10 +241,9 @@
 	(entries-since feed last-update)))
 
 
-;; List of all entries of the feed file
-(define (all-entries feed-path)
-  (let ([feed (call-with-input-file feed-path read-feed)])
-	(car (alist-ref 'entries feed))))
+;; List of all entries of the feed
+(define (all-entries feed)
+  (car (alist-ref 'entries feed)))
 
 
 ;; Atom parsing
@@ -372,6 +371,10 @@
 	 "Output file, used for mbox output. Default is stdout."
 	 (single-char #\o)
 	 (value (required FILE)))))
+;;	(since
+;;	 "Output entries after the given date, in YYYY-MM-DD hh:mm:ss format."
+;;	 (single-char #\s)
+;;	 (value (required DATETIME)))))
 
 
 ;; Prints cli usage to stderr.
@@ -384,22 +387,33 @@
 ;; TODO: accept piped-in feeds
 (define (main)
   (let* ([args (getopt-long (command-line-arguments) *opts*)]
-		 [output-dir (alist-ref 'outdir args)]
-		 [output (or (alist-ref 'output args) output-dir)]
-		 [template (if output-dir *maildir-template* *mbox-template*)])
+		 [free-args (alist-ref '@ args)])
 	(if (alist-ref 'help args)
 		(help)
-		(map (lambda (free-arg)
-			   (cond [(not (file-exists? free-arg))
-					  #f]
-					 [output
-					  (write-entries-to-file (all-entries free-arg) template output)]
-					 [(not output)
-					  (map (lambda (entry)
-							 (write-entry entry template
-										  (open-output-file* fileno/stdout)))
-                           (all-entries free-arg))]))
-			 (alist-ref '@ args)))))
+		(let ([feeds
+			   (map (lambda (file)
+					  (list file
+							(call-with-input-file file read-feed)))
+					free-args)])
+		  (map (lambda (feed-pair)
+				 (process-feed args feed-pair))
+			   feeds)))))
+
+
+(define (process-feed args feed-pair)
+  (let* ([feed (last feed-pair)]
+		 [feed-path (first feed-pair)]
+		 [output-dir (alist-ref 'outdir args)]
+		 [output (or (alist-ref 'output args) output-dir)]
+		[template (if output-dir *maildir-template* *mbox-template*)])
+	(cond
+	 [output
+	  (write-entries-to-file (all-entries feed) template output)]
+	 [(not output)
+	  (map (lambda (entry)
+			 (write-entry entry template
+							 (open-output-file* fileno/stdout)))
+			  (all-entries feed))])))
 
 
 ;; Supposed config root of the user (as per XDG, or simple ~/.config)
