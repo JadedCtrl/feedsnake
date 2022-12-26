@@ -360,7 +360,7 @@
 
 (import scheme
 		(chicken base) (chicken file) (chicken file posix) (chicken io)
-		(chicken process-context) (chicken process-context posix)
+		(chicken port) (chicken process-context) (chicken process-context posix)
 		srfi-1 srfi-19
 		feedsnake feedsnake-helpers
 		getopt-long)
@@ -382,7 +382,7 @@
 	 (single-char #\d)
 	 (value (required DIR)))
 	(output
-	 "Output file, used for mbox output. Default is stdout."
+	 "Output file, used for mbox output. Default is stdout ('-')."
 	 (single-char #\o)
 	 (value (required FILE)))
 	(since
@@ -398,7 +398,6 @@
 
 
 ;; The `main` procedure that should be called to run feedsnake-unix for use as script.
-;; TODO: accept piped-in feeds
 (define (main)
   (let* ([args (getopt-long (command-line-arguments) *opts*)]
 		 [free-args (alist-ref '@ args)])
@@ -406,8 +405,11 @@
 		(help)
 		(let ([feeds
 			   (map (lambda (file)
-					  (list file
-							(call-with-input-file file read-feed)))
+					  (let ([feed
+							 (if (string=? file "-")
+								 (call-with-input-string (read-string) read-feed)
+								 (call-with-input-file file read-feed))])
+						(list file feed)))
 					free-args)])
 		  (map (lambda (feed-pair)
 				 (process-feed args feed-pair))
