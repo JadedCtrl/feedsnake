@@ -19,15 +19,48 @@
 (load "named-format.scm")
 
 
+;; Module for misc. helper functions used by both feedsnake & feedsnake-unix
+(module feedsnake-helpers
+	(alist-car-ref date->utc-date current-date-utc)
+
+(import scheme
+		(chicken base)
+		srfi-19)
+
+;; Just car's the value of alist-ref (if it exists)
+(define (alist-car-ref key alist)
+  (let ([value (alist-ref key alist)])
+	(if value
+		(car value)
+		#f)))
+
+
+;; Convert a date of arbitrary timezone to UTC
+(define (date->utc-date date)
+  (time-utc->date (date->time-utc date)))
+
+
+;; The current date, with UTC (-0; Z) timezone
+(define (current-date-utc)
+  (date->utc-date (current-date)))
+
+
+) ;; feedsnake-helper module
+
+
+
 ;; The main feedsnake module; parses atom feeds into alists and strings
 (module feedsnake
-	(updated-feed-string read-feed entries-since write-entry write-entry-to-file write-entries-to-file all-entries entry->string
+	(updated-feed-string read-feed filter-entries write-entry
+	 write-entry-to-file write-entries-to-file all-entries entry->string
 	 *maildir-template* *mbox-template*)
 
 (import scheme
-		(chicken base) (chicken condition) (chicken io) (chicken file) (chicken process-context)  (chicken pathname) (chicken port)
+		(chicken base) (chicken condition) (chicken io) (chicken file)
+		(chicken process-context)  (chicken pathname) (chicken port)
 		srfi-1 srfi-13 srfi-19 srfi-69
 		date-strings
+		feedsnake-helpers
 		http-client
 		named-format
 		xattr
@@ -87,17 +120,16 @@
 		#f)))
 
 
-;; A list of entries updated since the given date
-(define (entries-since feed date-utc)
+(define (filter-entries feed filter)
   (let ([entry-date (lambda (entry) (car (alist-ref 'updated entry)))]
-		[since-entries '()])
+		[entries '()])
 	(map
 	 (lambda (entry)
-	   (if (date>=? (entry-date entry) date-utc)
-		   (set! since-entries
-			 (append since-entries (list entry)))))
+	   (if (apply filter (list entry))
+		   (set! entries
+			 (append entries (list entry)))))
 	 (car (alist-ref 'entries feed)))
-	since-entries))
+	entries))
 
 
 ;; Returns either the updated string of a feed (in comparison to old string),
@@ -230,15 +262,15 @@
 
 
 ;; List of entries updated/published since last feed parsing
-(define (latest-entries feed-path)
-  (let* ([feed (call-with-input-file feed-path read-feed)]
-		 [xattr-last-update (get-xattr feed-path "user.feedsnake.parsed")]
-		 [last-update (if xattr-last-update
-						  (rfc339-string->date xattr-last-update)
-						  (date->utc-date (make-date 0 0 0 0 01 01 1971)))])
-	(set-xattr feed-path "user.feedsnake.parsed"
-			   (date->rfc339-string (current-date-utc)))
-	(entries-since feed last-update)))
+;;(define (latest-entries feed-path)
+;;  (let* ([feed (call-with-input-file feed-path read-feed)]
+;;		 [xattr-last-update (get-xattr feed-path "user.feedsnake.parsed")]
+;;		 [last-update (if xattr-last-update
+;;						  (rfc339-string->date xattr-last-update)
+;;						  (date->utc-date (make-date 0 0 0 0 01 01 1971)))])
+;;	(set-xattr feed-path "user.feedsnake.parsed"
+;;			   (date->rfc339-string (current-date-utc)))
+;;	(entries-since feed last-update)))
 
 
 ;; List of all entries of the feed
@@ -311,30 +343,12 @@
 
 ;; Misc. functions
 ;; ————————————————————————————————————————
-
-;; Just car's the value of alist-ref (if it exists)
-(define (alist-car-ref key alist)
-  (let ([value (alist-ref key alist)])
-	(if value
-		(car value)
-		#f)))
-
-
 ;; Download a file over HTTP to the given port.
 (define (fetch-http url out-port)
   (call-with-input-request
    url #f
    (lambda (in-port) (copy-port in-port out-port))))
 
-
-;; Convert a date of arbitrary timezone to UTC
-(define (date->utc-date date)
-  (time-utc->date (date->time-utc date)))
-
-
-;; The current date, with UTC (-0; Z) timezone
-(define (current-date-utc)
-  (date->utc-date (current-date)))
 
 ) ;; feedsnake module
 
@@ -347,8 +361,8 @@
 (import scheme
 		(chicken base) (chicken file) (chicken file posix) (chicken io)
 		(chicken process-context) (chicken process-context posix)
-		srfi-1
-		feedsnake
+		srfi-1 srfi-19
+		feedsnake feedsnake-helpers
 		getopt-long)
 
 
@@ -370,11 +384,11 @@
 	(output
 	 "Output file, used for mbox output. Default is stdout."
 	 (single-char #\o)
-	 (value (required FILE)))))
-;;	(since
-;;	 "Output entries after the given date, in YYYY-MM-DD hh:mm:ss format."
-;;	 (single-char #\s)
-;;	 (value (required DATETIME)))))
+	 (value (required FILE)))
+	(since
+	 "Output entries after the given date, in YYYY-MM-DD hh:mm:ss format."
+	 (single-char #\s)
+	 (value (required DATETIME)))))
 
 
 ;; Prints cli usage to stderr.
@@ -405,15 +419,26 @@
 		 [feed-path (first feed-pair)]
 		 [output-dir (alist-ref 'outdir args)]
 		 [output (or (alist-ref 'output args) output-dir)]
-		[template (if output-dir *maildir-template* *mbox-template*)])
+		 [template (if output-dir *maildir-template* *mbox-template*)]
+		 [since-string (alist-ref 'since args)]
+		 [since (if since-string
+					(date->utc-date (string->date since-string "~Y-~m-~d ~H:~M:~S"))
+					#f)]
+		 [entry-date (lambda (entry)
+					   (or (alist-car-ref 'updated entry)
+						   (alist-car-ref 'published entry)))]
+		 [filter (lambda (entry)
+				   (if since
+					   (date>=? (entry-date entry) since)
+					   #t))])
 	(cond
 	 [output
-	  (write-entries-to-file (all-entries feed) template output)]
+	  (write-entries-to-file (filter-entries feed filter) template output)]
 	 [(not output)
 	  (map (lambda (entry)
 			 (write-entry entry template
 							 (open-output-file* fileno/stdout)))
-			  (all-entries feed))])))
+			  (filter-entries feed filter))])))
 
 
 ;; Supposed config root of the user (as per XDG, or simple ~/.config)
