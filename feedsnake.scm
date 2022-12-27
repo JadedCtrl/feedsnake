@@ -27,6 +27,7 @@
 		(chicken base)
 		srfi-19)
 
+
 ;; Just car's the value of alist-ref (if it exists)
 (define (alist-car-ref key alist)
   (let ([value (alist-ref key alist)])
@@ -51,7 +52,7 @@
 
 ;; The main feedsnake module; parses atom feeds into alists and strings
 (module feedsnake
-	(updated-feed-string read-feed filter-entries write-entry
+	(updated-feed-string read-feed filter-entries write-entry update-feed-file
 	 write-entry-to-file write-entries-to-file all-entries entry->string
 	 *maildir-template* *mbox-template*)
 
@@ -135,17 +136,11 @@
 ;; Returns either the updated string of a feed (in comparison to old string),
 ;; or #f if literally nothing's changed
 (define (updated-feed-string url old-string)
-  (let* ([new-string (fetch-feed-string url)]
+  (let* ([new-string (fetch-http-string url)]
 		 [updated? (not (eq? (hash old-string) (hash new-string)))])
 	(if updated?
 		new-string
 		#f)))
-
-
-;; Download a feed (AKA fetch over HTTP to a string)
-(define (fetch-feed-string url)
-  (call-with-output-string
-   (lambda (out) (fetch-http url out))))
 
 
 (define (entry->string entry template)
@@ -249,11 +244,11 @@
 
 
 ;; Switch the cached version of the feed with a newer version, if available
-(define (update-feed-file feed-path)
+(define (update-feed-file feed-path feed-url)
   (let* ([old-string (call-with-input-file feed-path
 					   (lambda (in-port) (read-string #f in-port)))]
 		 [new-string (updated-feed-string
-					  (get-xattr feed-path "user.xdg.origin.url")
+					  feed-url
 					  old-string)])
 	(if new-string
 		(call-with-output-file feed-path
@@ -338,6 +333,12 @@
    (lambda (in-port) (copy-port in-port out-port))))
 
 
+;; Download a feed (AKA fetch over HTTP to a string)
+(define (fetch-http-string url)
+  (call-with-output-string
+   (lambda (out) (fetch-http url out))))
+
+
 ) ;; feedsnake module
 
 
@@ -379,6 +380,9 @@
 	 "Output file, used for mbox output. Default is stdout ('-')."
 	 (single-char #\o)
 	 (value (required FILE)))
+	(update
+	 "Update feeds by downloading new versions to the same path."
+	 (single-char #\u))
 	(since
 	 "Output entries after the given date, in YYYY-MM-DD hh:mm:ss format."
 	 (single-char #\s)
@@ -386,8 +390,10 @@
 	(since-last
 	 "Output entries dating from the last saved parsing of the file."
 	 (single-char #\S))
+	(since-update
+	 "Output entries dating from the last update of the file.")
 	(no-save-date
-	 "Don't save the date of this parsing in cache; to avoid influencing since-last."
+	 "Don't save the date of this parse/update in cache; to avoid influencing since-*."
 	 (single-char #\n))))
 
 
@@ -397,6 +403,7 @@
   (write-string (usage *opts*) #f (open-output-file* fileno/stderr)))
 
 
+;; Wrap around the main function, so that the user isn't scared off by exceptions
 (define-syntax exception-condom
   (syntax-rules ()
 	((exception-condom expr)
@@ -405,7 +412,7 @@
 		   (write-string
 			(string-append (get-condition-property exn 'exn 'message)
 						   " ("
-						   (symbol->string (get-condition-property exn 'exn 'location))
+;;						   (symbol->string (get-condition-property exn 'exn 'location))
 						   ")\n")
 			#f (open-output-file* fileno/stderr))
 		   (exit 2))
@@ -421,14 +428,14 @@
 
 ;; The `main` procedure that should be called to run feedsnake-unix for use as script.
 (define (main)
-  (exception-condom
+;;  (exception-condom
    (let* ([args (getopt-long (command-line-arguments) *opts*)]
 		  [free-args (alist-ref '@ args)])
 	 (if (alist-ref 'help args)
 		 (help)
 		 (map (lambda (feed-pair)
 				(process-feed args feed-pair))
-			  (get-feeds free-args))))))
+			  (get-feeds free-args)))))
 
 
 ;; Turn the scripts free-args into parsed Feedsnake feed alists
@@ -445,25 +452,40 @@
   (let ([feed
 		 (if (string=? feed-path "-")
 			 (call-with-input-string (read-string) read-feed)
-			 (call-with-input-file feed-path read-feed))])
+			 (ignore-errors (call-with-input-file feed-path read-feed)))])
 	(list feed-path feed)))
 
 
 ;; Process a parsed feed, given arguments passed to the script
 (define (process-feed args feed-pair)
   (let* ([feed (last feed-pair)]
-		 [feed-path (first feed-pair)]
+		 [feed-path (first feed-pair)])
+	;; Update the feed
+	(if (alist-ref 'update args)
+		(begin
+		  (update-feed-file feed-path
+							(get-xattr feed-path "user.xdg.origin.url"))
+		  (set! feed (call-with-input-file feed-path read-feed))
+		  (if (not (alist-ref 'no-save-date args))
+			  (set-xattr feed-path "user.feedsnake.updated"
+						 (date->rfc339-string (current-date-utc))))))
+
+	;; Save the parsing date, unless the user doesn't want that
+	(if (and (file-exists? feed-path)
+			 (not (alist-ref 'no-save-date args)))
+		(set-xattr feed-path "user.feedsnake.parsed"
+				   (date->rfc339-string (current-date-utc))))
+
+	(output-entries args `(,feed-path ,feed))))
+
+
+;; Output the appropriate entrise of the given feed, using script's args
+(define (output-entries args feed-pair)
+  (let* ([feed (last feed-pair)]
 		 [output-dir (alist-ref 'outdir args)]
 		 [output (or (alist-ref 'output args) output-dir)]
 		 [template (if output-dir *maildir-template* *mbox-template*)]
 		 [filter (entry-filter feed-pair args)])
-
-	;; Save the parsing date, unless the user doesn't want that
-	(if (and (file-exists? (first feed-pair))
-			 (not (alist-ref 'no-save-date args)))
-		(set-xattr (first feed-pair) "user.feedsnake.parsed"
-				   (date->rfc339-string (current-date-utc))))
-
 	(cond
 	 [output
 	  (write-entries-to-file (filter-entries feed filter) template output)]
@@ -483,17 +505,24 @@
 		 [entry-date (lambda (entry)
 					   (or (alist-car-ref 'updated entry)
 						   (alist-car-ref 'published entry)))]
-		 [last-string (or (ignore-errors
+		 [last-parse-string (or (ignore-errors
 						   (get-xattr (first feed-pair) "user.feedsnake.parsed"))
 						  "1971-01-01T00:00:00Z")]
-		 [last-update (rfc339-string->date last-string)])
+		 [last-parse (rfc339-string->date last-parse-string)]
+		 [last-update-string (or (ignore-errors
+								 (get-xattr (first feed-pair) "user.feedsnake.updated"))
+								"1971-01-01T00:00:00Z")]
+		 [last-update (rfc339-string->date last-update-string)])
 	(lambda (entry)
 	  (cond [since
 			 (date>=? (entry-date entry) since)]
 			[(alist-ref 'since-last args)
+			 (date>=? (entry-date entry) last-parse)]
+			[(alist-ref 'since-update args)
 			 (date>=? (entry-date entry) last-update)]
 			[#t
 			 #t]))))
+
 
 
 ;; Supposed config root of the user (as per XDG, or simple ~/.config)
