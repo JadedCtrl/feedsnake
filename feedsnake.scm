@@ -347,8 +347,9 @@
 	(main main)
 
 (import scheme
-		(chicken base) (chicken file) (chicken file posix) (chicken io)
-		(chicken port) (chicken process-context) (chicken process-context posix)
+		(chicken base) (chicken condition) (chicken file) (chicken file posix)
+		(chicken io) (chicken port) (chicken process-context)
+		(chicken process-context posix)
 		srfi-1 srfi-19
 		date-strings
 		feedsnake feedsnake-helpers
@@ -358,9 +359,12 @@
 
 (define *help-msg*
   (string-append
-   "usage: feedsnake [-h] FILE...\n"
+   "usage: feedsnake [-hn] [-s|S] [-o|d] FILE...\n"
    "Feedsnake is a program for converting Atom feeds into mbox/maildir files.\n"
-   "Any Atom feeds passed as an argument will be output in mbox format.\n\n"))
+   "Any Atom feeds passed as an argument will be output in mbox format.\n\n"
+   "If a FILE value is '-', or no FILE is provided, feedsnake will read a feed\n"
+   "from standard input. --since-last and similar arguments have no impact on\n"
+   "these feeds.\n\n"))
 
 
 (define *opts*
@@ -393,15 +397,38 @@
   (write-string (usage *opts*) #f (open-output-file* fileno/stderr)))
 
 
+(define-syntax exception-condom
+  (syntax-rules ()
+	((exception-condom expr)
+	 (handle-exceptions exn
+		 (begin
+		   (write-string
+			(string-append (get-condition-property exn 'exn 'message)
+						   " ("
+						   (symbol->string (get-condition-property exn 'exn 'location))
+						   ")\n")
+			#f (open-output-file* fileno/stderr))
+		   (exit 2))
+	   expr))))
+
+
+  ;; Just ignore whatever exceptions the expression throws our way
+(define-syntax ignore-errors
+  (syntax-rules ()
+	((ignore-errors expr)
+	 (handle-exceptions exn #f expr))))
+
+
 ;; The `main` procedure that should be called to run feedsnake-unix for use as script.
 (define (main)
-  (let* ([args (getopt-long (command-line-arguments) *opts*)]
-		 [free-args (alist-ref '@ args)])
-	(if (alist-ref 'help args)
-		(help)
-		(map (lambda (feed-pair)
-			   (process-feed args feed-pair))
-			 (get-feeds free-args)))))
+  (exception-condom
+   (let* ([args (getopt-long (command-line-arguments) *opts*)]
+		  [free-args (alist-ref '@ args)])
+	 (if (alist-ref 'help args)
+		 (help)
+		 (map (lambda (feed-pair)
+				(process-feed args feed-pair))
+			  (get-feeds free-args))))))
 
 
 ;; Turn the scripts free-args into parsed Feedsnake feed alists
@@ -432,7 +459,8 @@
 		 [filter (entry-filter feed-pair args)])
 
 	;; Save the parsing date, unless the user doesn't want that
-	(if (not (alist-ref 'no-save-date args))
+	(if (and (file-exists? (first feed-pair))
+			 (not (alist-ref 'no-save-date args)))
 		(set-xattr (first feed-pair) "user.feedsnake.parsed"
 				   (date->rfc339-string (current-date-utc))))
 
@@ -455,11 +483,10 @@
 		 [entry-date (lambda (entry)
 					   (or (alist-car-ref 'updated entry)
 						   (alist-car-ref 'published entry)))]
-		 [last-update (or
-					   (date->utc-date
-						(rfc339-string->date
-						 (get-xattr (first feed-pair) "user.feedsnake.parsed")))
-					   (date->utc-date (make-date 0 0 0 0 01 01 1971)))])
+		 [last-string (or (ignore-errors
+						   (get-xattr (first feed-pair) "user.feedsnake.parsed"))
+						  "1971-01-01T00:00:00Z")]
+		 [last-update (rfc339-string->date last-string)])
 	(lambda (entry)
 	  (cond [since
 			 (date>=? (entry-date entry) since)]
