@@ -261,18 +261,6 @@
 	new-string))
 
 
-;; List of entries updated/published since last feed parsing
-;;(define (latest-entries feed-path)
-;;  (let* ([feed (call-with-input-file feed-path read-feed)]
-;;		 [xattr-last-update (get-xattr feed-path "user.feedsnake.parsed")]
-;;		 [last-update (if xattr-last-update
-;;						  (rfc339-string->date xattr-last-update)
-;;						  (date->utc-date (make-date 0 0 0 0 01 01 1971)))])
-;;	(set-xattr feed-path "user.feedsnake.parsed"
-;;			   (date->rfc339-string (current-date-utc)))
-;;	(entries-since feed last-update)))
-
-
 ;; List of all entries of the feed
 (define (all-entries feed)
   (car (alist-ref 'entries feed)))
@@ -362,8 +350,10 @@
 		(chicken base) (chicken file) (chicken file posix) (chicken io)
 		(chicken port) (chicken process-context) (chicken process-context posix)
 		srfi-1 srfi-19
+		date-strings
 		feedsnake feedsnake-helpers
-		getopt-long)
+		getopt-long
+		xattr)
 
 
 (define *help-msg*
@@ -388,7 +378,13 @@
 	(since
 	 "Output entries after the given date, in YYYY-MM-DD hh:mm:ss format."
 	 (single-char #\s)
-	 (value (required DATETIME)))))
+	 (value (required DATETIME)))
+	(since-last
+	 "Output entries dating from the last saved parsing of the file."
+	 (single-char #\S))
+	(no-save-date
+	 "Don't save the date of this parsing in cache; to avoid influencing since-last."
+	 (single-char #\n))))
 
 
 ;; Prints cli usage to stderr.
@@ -433,7 +429,13 @@
 		 [output-dir (alist-ref 'outdir args)]
 		 [output (or (alist-ref 'output args) output-dir)]
 		 [template (if output-dir *maildir-template* *mbox-template*)]
-		 [filter (entry-filter args)])
+		 [filter (entry-filter feed-pair args)])
+
+	;; Save the parsing date, unless the user doesn't want that
+	(if (not (alist-ref 'no-save-date args))
+		(set-xattr (first feed-pair) "user.feedsnake.parsed"
+				   (date->rfc339-string (current-date-utc))))
+
 	(cond
 	 [output
 	  (write-entries-to-file (filter-entries feed filter) template output)]
@@ -445,18 +447,26 @@
 
 
 ;; Construct a filter function for feeds, given the script's arguments
-(define (entry-filter args)
+(define (entry-filter feed-pair args)
   (let* ([since-string (alist-ref 'since args)]
 		 [since (if since-string
 					(date->utc-date (string->date since-string "~Y-~m-~d ~H:~M:~S"))
 					#f)]
 		 [entry-date (lambda (entry)
 					   (or (alist-car-ref 'updated entry)
-						   (alist-car-ref 'published entry)))])
+						   (alist-car-ref 'published entry)))]
+		 [last-update (or
+					   (date->utc-date
+						(rfc339-string->date
+						 (get-xattr (first feed-pair) "user.feedsnake.parsed")))
+					   (date->utc-date (make-date 0 0 0 0 01 01 1971)))])
 	(lambda (entry)
-	  (if since
-		  (date>=? (entry-date entry) since)
-		  #t))))
+	  (cond [since
+			 (date>=? (entry-date entry) since)]
+			[(alist-ref 'since-last args)
+			 (date>=? (entry-date entry) last-update)]
+			[#t
+			 #t]))))
 
 
 ;; Supposed config root of the user (as per XDG, or simple ~/.config)
