@@ -403,36 +403,37 @@
 		 [free-args (alist-ref '@ args)])
 	(if (alist-ref 'help args)
 		(help)
-		(let ([feeds
-			   (map (lambda (file)
-					  (let ([feed
-							 (if (string=? file "-")
-								 (call-with-input-string (read-string) read-feed)
-								 (call-with-input-file file read-feed))])
-						(list file feed)))
-					free-args)])
-		  (map (lambda (feed-pair)
-				 (process-feed args feed-pair))
-			   feeds)))))
+		(map (lambda (feed-pair)
+			   (process-feed args feed-pair))
+			 (get-feeds free-args)))))
 
 
+;; Turn the scripts free-args into parsed Feedsnake feed alists
+(define (get-feeds free-args)
+  (let ([feed-paths
+		 (if (eq? (length free-args) 0)
+			 '("-")
+			 free-args)])
+	(map get-feed feed-paths)))
+
+
+;; Turn a given feed-path (free-arg) into a parsed Feedsnake feed, if possible
+(define (get-feed feed-path)
+  (let ([feed
+		 (if (string=? feed-path "-")
+			 (call-with-input-string (read-string) read-feed)
+			 (call-with-input-file feed-path read-feed))])
+	(list feed-path feed)))
+
+
+;; Process a parsed feed, given arguments passed to the script
 (define (process-feed args feed-pair)
   (let* ([feed (last feed-pair)]
 		 [feed-path (first feed-pair)]
 		 [output-dir (alist-ref 'outdir args)]
 		 [output (or (alist-ref 'output args) output-dir)]
 		 [template (if output-dir *maildir-template* *mbox-template*)]
-		 [since-string (alist-ref 'since args)]
-		 [since (if since-string
-					(date->utc-date (string->date since-string "~Y-~m-~d ~H:~M:~S"))
-					#f)]
-		 [entry-date (lambda (entry)
-					   (or (alist-car-ref 'updated entry)
-						   (alist-car-ref 'published entry)))]
-		 [filter (lambda (entry)
-				   (if since
-					   (date>=? (entry-date entry) since)
-					   #t))])
+		 [filter (entry-filter args)])
 	(cond
 	 [output
 	  (write-entries-to-file (filter-entries feed filter) template output)]
@@ -441,6 +442,21 @@
 			 (write-entry entry template
 							 (open-output-file* fileno/stdout)))
 			  (filter-entries feed filter))])))
+
+
+;; Construct a filter function for feeds, given the script's arguments
+(define (entry-filter args)
+  (let* ([since-string (alist-ref 'since args)]
+		 [since (if since-string
+					(date->utc-date (string->date since-string "~Y-~m-~d ~H:~M:~S"))
+					#f)]
+		 [entry-date (lambda (entry)
+					   (or (alist-car-ref 'updated entry)
+						   (alist-car-ref 'published entry)))])
+	(lambda (entry)
+	  (if since
+		  (date>=? (entry-date entry) since)
+		  #t))))
 
 
 ;; Supposed config root of the user (as per XDG, or simple ~/.config)
