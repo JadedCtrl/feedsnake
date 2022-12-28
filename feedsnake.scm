@@ -142,7 +142,7 @@
 ;; or #f if literally nothing's changed
 (define (updated-feed-string url old-string)
   (let* ([new-string (fetch-http-string url)]
-		 [updated? (not (eq? (hash old-string) (hash new-string)))])
+		 [updated? (not (string=? old-string new-string))])
 	(if updated?
 		new-string
 		#f)))
@@ -248,17 +248,22 @@
 		  'message (string-append base-out-path " either isn't accessible or isn't a directory."))))))
 
 
-;; Switch the cached version of the feed with a newer version, if available
+;; Switch the cached version of the feed with a newer version, if available.
+;; If the feed-path doesn't exist, then the feed will be downloaded fresh.
 (define (update-feed-file feed-path feed-url)
-  (let* ([old-string (call-with-input-file feed-path
-					   (lambda (in-port) (read-string #f in-port)))]
+  (let* ([old-string (if (file-exists? feed-path)
+						 (call-with-input-file feed-path
+						   (lambda (in-port)
+							 (read-string #f in-port)))
+						 "")]
 		 [new-string (updated-feed-string
 					  feed-url
 					  old-string)])
 	(if new-string
 		(call-with-output-file feed-path
-		  (lambda (out) (write-string new-string #f out))))
-	new-string))
+		  (lambda (out-port)
+			(write-string new-string #f out-port)))
+		#f)))
 
 
 ;; List of all entries of the feed
@@ -360,6 +365,7 @@
 		date-strings
 		feedsnake feedsnake-helpers
 		getopt-long
+		uri-common
 		xattr)
 
 
@@ -370,7 +376,7 @@
    "       feedsnake [-h] [-s] [-o|d]\n\n"
    "Feedsnake is a program for converting Atom feeds into mbox/maildir files.\n"
    "Any Atom feeds passed as input will be output in mbox or maildir format.\n\n"
-   "If a FILE value is '-' not provided, feedsnake will read a feed over standard\n"
+   "If a FILE value is '-' or not provided, feedsnake will read a feed over standard\n"
    "input. --since-last and similar arguments have no impact on these feeds.\n\n"
    "If you want to subscribe to feeds with Feedsnake, you'll probably do something\n"
    "like so:\n"
@@ -463,25 +469,48 @@
 		 (help)
 		 (map (lambda (feed-pair)
 				(process-feed args feed-pair))
-			  (get-feeds free-args))))))
+			  (get-feeds free-args args))))))
 
 
 ;; Turn the scripts free-args into parsed Feedsnake feed alists
-(define (get-feeds free-args)
+(define (get-feeds free-args args)
   (let ([feed-paths
 		 (if (eq? (length free-args) 0)
 			 '("-")
 			 free-args)])
-	(map get-feed feed-paths)))
+	(map (lambda (path) (get-feed path args))
+		 feed-paths)))
 
 
 ;; Turn a given feed-path (free-arg) into a parsed Feedsnake feed, if possible
-(define (get-feed feed-path)
-  (let ([feed
-		 (if (string=? feed-path "-")
-			 (call-with-input-string (read-string) read-feed)
-			 (ignore-errors (call-with-input-file feed-path read-feed)))])
-	(list feed-path feed)))
+(define (get-feed feed-path args)
+  (let*
+	  ([uri (ignore-errors (absolute-uri feed-path))]
+	   [out-path (cond
+				   [(and uri (alist-ref 'cache args))
+					(alist-ref 'cache args)]
+				   [uri "-"]
+				   [#t  feed-path])]
+	   [feed
+		(cond
+		 [(string=? feed-path "-")
+		  (call-with-input-string (read-string)
+								  read-feed)]
+		 [(and uri (not (string=? "-" out-path)))
+		  (begin
+			(update-feed-file out-path (uri->string uri))
+			(ignore-errors (call-with-input-file out-path read-feed)))]
+		 [uri
+		  (call-with-input-string (updated-feed-string (uri->string uri) "")
+								  read-feed)]
+		 [#t
+		  (ignore-errors (call-with-input-file out-path read-feed))])])
+
+	;; Set the origin URL, if newly-created cache file
+	(if (and uri (not (string=? "-" out-path)))
+		(set-xattr out-path "user.xdg.origin.url" (uri->string uri)))
+
+	(list out-path feed)))
 
 
 ;; Process a parsed feed, given arguments passed to the script
