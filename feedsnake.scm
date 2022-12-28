@@ -121,15 +121,20 @@
 		#f)))
 
 
+ ;; Construct a filter function for feeds, given the script's arguments
 (define (filter-entries feed filter)
   (let ([entry-date (lambda (entry) (car (alist-ref 'updated entry)))]
+		[unfiltered (if feed
+						(alist-car-ref 'entries feed)
+						#f)]
 		[entries '()])
-	(map
-	 (lambda (entry)
-	   (if (apply filter (list entry))
-		   (set! entries
-			 (append entries (list entry)))))
-	 (car (alist-ref 'entries feed)))
+	(if unfiltered
+		(map
+		 (lambda (entry)
+		   (if (apply filter (list entry))
+			   (set! entries
+				 (append entries (list entry)))))
+		 unfiltered))
 	entries))
 
 
@@ -258,7 +263,7 @@
 
 ;; List of all entries of the feed
 (define (all-entries feed)
-  (car (alist-ref 'entries feed)))
+  (alist-car-ref 'entries feed))
 
 
 ;; Atom parsing
@@ -383,6 +388,9 @@
 	(update
 	 "Update feeds by downloading new versions to the same path."
 	 (single-char #\u))
+	(update-since
+	 "Alias for --update and --since-last. This is probably the option you want."
+	 (single-char #\U))
 	(since
 	 "Output entries after the given date, in YYYY-MM-DD hh:mm:ss format."
 	 (single-char #\s)
@@ -428,14 +436,14 @@
 
 ;; The `main` procedure that should be called to run feedsnake-unix for use as script.
 (define (main)
-;;  (exception-condom
+  (exception-condom
    (let* ([args (getopt-long (command-line-arguments) *opts*)]
 		  [free-args (alist-ref '@ args)])
 	 (if (alist-ref 'help args)
 		 (help)
 		 (map (lambda (feed-pair)
 				(process-feed args feed-pair))
-			  (get-feeds free-args)))))
+			  (get-feeds free-args))))))
 
 
 ;; Turn the scripts free-args into parsed Feedsnake feed alists
@@ -459,24 +467,30 @@
 ;; Process a parsed feed, given arguments passed to the script
 (define (process-feed args feed-pair)
   (let* ([feed (last feed-pair)]
-		 [feed-path (first feed-pair)])
+		 [feed-path (first feed-pair)]
+		 [update? (or (alist-ref 'update args) (alist-ref 'update-since args))])
+
 	;; Update the feed
-	(if (alist-ref 'update args)
+	(if update?
 		(begin
 		  (update-feed-file feed-path
 							(get-xattr feed-path "user.xdg.origin.url"))
-		  (set! feed (call-with-input-file feed-path read-feed))
-		  (if (not (alist-ref 'no-save-date args))
-			  (set-xattr feed-path "user.feedsnake.updated"
-						 (date->rfc339-string (current-date-utc))))))
+		  (set! feed (call-with-input-file feed-path read-feed))))
 
-	;; Save the parsing date, unless the user doesn't want that
+	;; Print all entries to stdout
+	(output-entries args `(,feed-path ,feed))
+
+	;; Change file's update-date
+	(if (and update?
+			 (not (alist-ref 'no-save-date args)))
+		(set-xattr feed-path "user.feedsnake.updated"
+				   (date->rfc339-string (current-date-utc))))
+
+	;; Save the file's parsing date
 	(if (and (file-exists? feed-path)
 			 (not (alist-ref 'no-save-date args)))
 		(set-xattr feed-path "user.feedsnake.parsed"
-				   (date->rfc339-string (current-date-utc))))
-
-	(output-entries args `(,feed-path ,feed))))
+				   (date->rfc339-string (current-date-utc))))))
 
 
 ;; Output the appropriate entrise of the given feed, using script's args
@@ -485,15 +499,18 @@
 		 [output-dir (alist-ref 'outdir args)]
 		 [output (or (alist-ref 'output args) output-dir)]
 		 [template (if output-dir *maildir-template* *mbox-template*)]
-		 [filter (entry-filter feed-pair args)])
+		 [filter (entry-filter feed-pair args)]
+		 [entries (filter-entries feed filter)])
 	(cond
+	 [(not entries)
+		  #f]
 	 [output
-	  (write-entries-to-file (filter-entries feed filter) template output)]
+	  (write-entries-to-file entries template output)]
 	 [(not output)
 	  (map (lambda (entry)
 			 (write-entry entry template
 							 (open-output-file* fileno/stdout)))
-			  (filter-entries feed filter))])))
+			  entries)])))
 
 
 ;; Construct a filter function for feeds, given the script's arguments
@@ -516,13 +533,12 @@
 	(lambda (entry)
 	  (cond [since
 			 (date>=? (entry-date entry) since)]
-			[(alist-ref 'since-last args)
-			 (date>=? (entry-date entry) last-parse)]
+			[(or (alist-ref 'since-last args) (alist-ref 'update-since args))
+			 (date>=? (entry-date entry) (or last-parse last-update))]
 			[(alist-ref 'since-update args)
 			 (date>=? (entry-date entry) last-update)]
 			[#t
 			 #t]))))
-
 
 
 ;; Supposed config root of the user (as per XDG, or simple ~/.config)
