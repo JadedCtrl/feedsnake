@@ -365,12 +365,28 @@
 
 (define *help-msg*
   (string-append
-   "usage: feedsnake [-hn] [-s|S] [-o|d] FILE...\n"
+   "usage: feedsnake [-hnuU] [-s|S] [-o|d] FILE...\n"
+   "       feedsnake [-hn] [-c] [-s] [-o|d] URL...\n"
+   "       feedsnake [-h] [-s] [-o|d]\n\n"
    "Feedsnake is a program for converting Atom feeds into mbox/maildir files.\n"
-   "Any Atom feeds passed as an argument will be output in mbox format.\n\n"
-   "If a FILE value is '-', or no FILE is provided, feedsnake will read a feed\n"
-   "from standard input. --since-last and similar arguments have no impact on\n"
-   "these feeds.\n\n"))
+   "Any Atom feeds passed as input will be output in mbox or maildir format.\n\n"
+   "If a FILE value is '-' not provided, feedsnake will read a feed over standard\n"
+   "input. --since-last and similar arguments have no impact on these feeds.\n\n"
+   "If you want to subscribe to feeds with Feedsnake, you'll probably do something\n"
+   "like so:\n"
+   "       feedsnake --cache ~/feeds/hacker_news.xml \\\n"
+   "                 --output ~/feeds/hacker_news.mbox \\\n"
+   "                 https://news.ycombinator.com/rss\n\n"
+   "Then, to update your subscription, just run:\n"
+   "       feedsnake --update --since-last \\\n"
+   "                 --output ~/feeds/hacker_news.mbox \\\n"
+   "                 ~/feeds/hacker_news.xml\n\n"
+   "For updating all feeds:\n"
+   "       feedsnake --update --since-last ~/feeds/*.xml > ~/feeds/all.mbox\n\n"
+   "The FILE given as input can be any Atom/RSS file. If you'd like to update\n"
+   "the FILE (with --update or --update-since), then it must have the\n"
+   "'user.xdg.origin.url' extended attribute set as the feed URL. You can create\n"
+   "such a file as in the above example, by passing a URL with a --cache file set.\n\n"))
 
 
 (define *opts*
@@ -385,8 +401,12 @@
 	 "Output file, used for mbox output. Default is stdout ('-')."
 	 (single-char #\o)
 	 (value (required FILE)))
+	(cache
+	 "The cache file used if a URL is passed as argument."
+	 (single-char #\c)
+	 (value (required FILE)))
 	(update
-	 "Update feeds by downloading new versions to the same path."
+	 "Update a feed FILE by downloading its newest version to the same path."
 	 (single-char #\u))
 	(update-since
 	 "Alias for --update and --since-last. This is probably the option you want."
@@ -401,7 +421,7 @@
 	(since-update
 	 "Output entries dating from the last update of the file.")
 	(no-save-date
-	 "Don't save the date of this parse/update in cache; to avoid influencing since-*."
+	 "Don't save parse/update time of this operation, to avoid influencing --since-*."
 	 (single-char #\n))))
 
 
