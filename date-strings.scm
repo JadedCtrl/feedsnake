@@ -37,9 +37,9 @@
 (define (rfc339-string->date string)
   (handle-exceptions exn
 	  (handle-exceptions exn
-		  (string->date string "~Y-~m-~dT~H:~M:~S")
+		  (string->date string "~Y-~m-~dT~H:~M:~S~z")
 		#f)
-	(string->date string "~Y-~m-~dT~H:~M:~S~z")))
+	(string->date string "~Y-~m-~dT~H:~M:~S")))
 
 
 ;; Date into an RFC228 (e-mail) string
