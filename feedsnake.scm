@@ -15,9 +15,6 @@
 ;; along with this program. If not, see <https://www.gnu.org/licenses/>.
 ;;
 
-(load "date-strings.scm")
-(load "named-format.scm")
-
 
 ;; Module for misc. helper functions used by both feedsnake & feedsnake-unix
 (module feedsnake-helpers
