@@ -237,9 +237,13 @@
 
 ;; Output path for an entry w multifile template
 (define (multifile-entry-path entry template-alist base-out-path)
-  (let* ([file-leaf (named-format (alist-car-ref 'filename-template template-alist) entry)])
-	(if (create-directory base-out-path)
-		(string-append base-out-path "/" file-leaf)
+  (let* ([file-leaf (named-format (alist-car-ref 'filename-template template-alist) entry)]
+		 [new-out-path (string-append base-out-path "/" "new")])
+	(if (and (create-directory base-out-path)
+			 (create-directory new-out-path)
+			 (create-directory (string-append base-out-path "/" "cur"))
+			 (create-directory (string-append base-out-path "/" "tmp")))
+		(string-append new-out-path "/" file-leaf ":2,")
 		(signal
 		 (make-property-condition
 		  'exn 'location 'file
