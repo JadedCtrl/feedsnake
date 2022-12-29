@@ -69,14 +69,10 @@
   `((entry-template
 	 ,(string-append
 	   "From: ~{{~A ||||from-name}}"
-	   "<~{{~A||feedsnake||FROM_USER||author-user||feed-title}}"
-	   "@"
-	   "~{{~A||localhost||FROM_HOST||author-domain||feed-domain}}>"
+	   "<~{{~A||feedsnake@localhost||FROM_ADDRESS||author-address||feed-address}}>"
 	   "\n"
- 	   "To:~{{ ~A ||You||TO_NAME||USER}}"
-	   "<~{{~A||you||TO_USER||USER}}"
-	   "@"
-	   "~{{~A||localhost||TO_HOST||HOSTNAME}}>"
+ 	   "To: ~{{~A ||You||TO_NAME||USER}}"
+	   "<~{{~A||you@localhost||TO_ADDRESS}}>"
 	   "\n"
 	   "Subject: ~{{~A||Unnamed post||title}}\n"
 	   "Date: ~{{~A||||updated-rfc228||published-rfc228}}\n"
@@ -189,11 +185,16 @@
 
 ;; Writes a given feed entry to the out-port, as per the feedsnake-unix-format template alist
 (define (write-entry entry template-alist out-port)
-  (write-string
-   (entry->string (append (get-environment-variables) entry)
-				  (alist-car-ref 'entry-template template-alist))
-   #f
-   out-port))
+  (let ([env-variables
+		 (map (lambda (pair)
+				(list (string->symbol (car pair))
+					  (cdr pair)))
+			  (get-environment-variables))])
+	(write-string
+	 (entry->string (append env-variables entry)
+					(alist-car-ref 'entry-template template-alist))
+	 #f
+	 out-port)))
 
 
 ;; Write an entry to the given file (directory for multifile; normal file otherwise)
