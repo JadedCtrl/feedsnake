@@ -48,6 +48,17 @@ such a file as in the above example, by passing a URL with a --cache file set.
 ```
 
 
+## Installation
+Feedsnake is made using [Chicken Scheme](https://call-cc.org), a cute little Scheme that's very friendly. Once you've got Chicken Scheme installed, you can go ahead and build Feedsnake like so:
+```
+$ sudo make dependencies
+$ make client
+$ sudo cp ./feedsnake /usr/local/bin/
+```
+
+… actually, that's somewhat of a lie. You need to manually install the [xattr](https://github.com/jadedctrl/xattr) library first, since it's not in the egg depot.
+
+
 ## Examples
 ### Feeds, generally
 To subscribe to a feed, you're really just creating a cache file for the feed. It's simple. Here:
