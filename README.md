@@ -1,7 +1,9 @@
 # Feedsnake
 Simple Atom-to-mail (Mbox, Maildir) program: You pass it an Atom feed, it'll turn it into an mail client-friendly set of e-mails. It's pretty much [feed2maildir](https://github.com/sulami/feed2maildir) combined with [feed2mail](https://github.com/vmapps/feed2mail), but less cool. It's also pretty much my attempt replacing an old project, [Pogger](https://github.com/jadedctrl/pogger), but for LiGNUx.
 
-Feedsnake is scriptable, and can be easily used for one-off conversions or for managing your feed subscriptions generally. It pairs well with something like [Mutt](https://duckduckgo.com/l/?uddg=http%3A%2F%2Fwww.mutt.org&rut=bdcef874f2615434d459413d18463f18c41b3dbc415ccba8bdb35b350ac16340) to read your feeds.
+Feedsnake is scriptable, and can be easily used for one-off conversions or for managing your feed subscriptions generally. It pairs well with something like [Mutt](https://www.mutt.org) to read your feeds.
+
+Now, I would recommend the *beautiful* program [sfeed](https://codemadness.org/sfeed-simple-feed-parser.html) over Feedsnake; though Feedsnake still does work.
 
 
 ## Usage
@@ -56,7 +58,7 @@ $ make client
 $ sudo cp ./feedsnake /usr/local/bin/
 ```
 
-… actually, that's somewhat of a lie. You need to manually install the [xattr](https://github.com/jadedctrl/xattr) library first, since it's not in the egg depot.
+… actually, that's somewhat of a lie. You need to manually install the [xattr](https://hak.xwx.moe/jadedctrl/xattr) library first, since it's not in the egg depot.
 
 
 ## Examples
@@ -99,6 +101,5 @@ And now, lets downloading all videos uploaded since the last update:
 ## Meta
 * **Author:** Jaidyn Ann (jadedctrl@posteo.at)
 * **License:** GPLv3
-* https://github.com/jadedctrl/feedsnake
-* https://notabug.org/jadedctrl/feedsnake
+* https://hak.xwx.moe/jadedctrl/feedsnake
 * https://xwx.moe/en/
